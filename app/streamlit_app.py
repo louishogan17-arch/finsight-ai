@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import hmac
 import os
 import sys
 from pathlib import Path
@@ -22,7 +23,7 @@ st.set_page_config(
     page_title="FinSight AI | Financial Intelligence",
     page_icon="◈",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="locked",
 )
 
 st.markdown(
@@ -38,7 +39,8 @@ st.markdown(
     }
     .stApp { background: #081015; color: var(--ink); }
     [data-testid="stSidebar"] { background: #0d171c; border-right: 1px solid var(--line); }
-    [data-testid="stToolbar"], #MainMenu, footer { visibility: hidden; }
+    #MainMenu, footer { visibility: hidden; }
+    [data-testid="stAppDeployButton"] { display: none; }
     .block-container { max-width: 1180px; padding-top: 2.4rem; padding-bottom: 4rem; }
     h1, h2, h3 { letter-spacing: -.025em; }
     .brand-kicker { color: var(--accent); font-size: .78rem; font-weight: 750; letter-spacing: .15em; text-transform: uppercase; margin-bottom: .55rem; }
@@ -63,12 +65,50 @@ st.markdown(
     .source-title { color: #dce9e5; font-size:.82rem; font-weight:700; }
     .source-copy { color: var(--muted); font-size:.76rem; line-height:1.45; margin-top:.25rem; }
     .tech-line { color: var(--muted); font-size: .76rem; line-height:1.6; border-top: 1px solid var(--line); margin-top: 1.5rem; padding-top: 1rem; }
+    .access-shell { max-width: 540px; margin: 10vh auto 0; padding: 2.2rem; border: 1px solid var(--line); border-radius: 20px; background: linear-gradient(145deg, var(--panel), #0d171c); }
+    .access-mark { color: var(--accent); font-size: 2rem; margin-bottom: .8rem; }
+    .access-title { font-size: 2rem; font-weight: 760; letter-spacing: -.04em; margin-bottom: .5rem; }
+    .access-copy { color: var(--muted); line-height: 1.6; margin-bottom: 1.2rem; }
     div.stButton > button { border-radius: 10px; border: 1px solid var(--line); font-weight: 650; }
     div.stButton > button[kind="primary"] { background: var(--accent); color: #062018; border: 0; }
     </style>
     """,
     unsafe_allow_html=True,
 )
+
+
+def require_access() -> None:
+    """Show an access-code gate when APP_ACCESS_CODE is configured."""
+    required_code = os.getenv("APP_ACCESS_CODE", "").strip()
+    if not required_code or st.session_state.get("access_granted", False):
+        return
+
+    st.markdown(
+        """
+        <style>[data-testid="stSidebar"] { display: none; }</style>
+        <div class="access-shell">
+            <div class="access-mark">◈</div>
+            <div class="access-title">FinSight AI</div>
+            <div class="access-copy">This portfolio demonstration is private. Enter the access code supplied by the project owner to continue.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    with st.form("access_form"):
+        entered_code = st.text_input("Portfolio access code", type="password")
+        submitted = st.form_submit_button("Open demo", type="primary", use_container_width=True)
+
+    if submitted:
+        if hmac.compare_digest(entered_code.strip(), required_code):
+            st.session_state.access_granted = True
+            st.rerun()
+        st.error("That access code is not correct.")
+
+    st.stop()
+
+
+require_access()
 
 SUGGESTED_QUESTIONS = [
     "What was total revenue and how did it change year over year?",
@@ -116,9 +156,15 @@ st.session_state.setdefault("messages", [])
 st.session_state.setdefault("documents_ready", False)
 st.session_state.setdefault("document_summary", None)
 st.session_state.setdefault("uploader_key", 0)
+st.session_state.setdefault("questions_asked", 0)
 
 api_key_found = bool(os.getenv("OPENAI_API_KEY"))
 model_name = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
+try:
+    question_limit = max(1, int(os.getenv("MAX_QUESTIONS_PER_SESSION", "8")))
+except ValueError:
+    question_limit = 8
+questions_remaining = max(0, question_limit - st.session_state.questions_asked)
 
 with st.sidebar:
     st.markdown("### ◈ FinSight AI")
@@ -154,6 +200,7 @@ with st.sidebar:
             """,
             unsafe_allow_html=True,
         )
+        st.caption(f"Demo allowance: {questions_remaining} of {question_limit} questions remaining")
         if st.button("Replace documents", use_container_width=True):
             store.reset()
             reset_chat()
@@ -219,7 +266,12 @@ if st.session_state.documents_ready and not st.session_state.messages:
     st.markdown("<div class='section-label'>Start an investigation</div>", unsafe_allow_html=True)
     prompt_columns = st.columns(2)
     for index, suggestion in enumerate(SUGGESTED_QUESTIONS):
-        if prompt_columns[index % 2].button(suggestion, key=f"suggestion_{index}", use_container_width=True):
+        if prompt_columns[index % 2].button(
+            suggestion,
+            key=f"suggestion_{index}",
+            use_container_width=True,
+            disabled=questions_remaining == 0,
+        ):
             question = suggestion
 
 for message in st.session_state.messages:
@@ -232,11 +284,15 @@ for message in st.session_state.messages:
 
 typed_question = st.chat_input(
     "Ask FinSight about revenue, margins, cash flow, risks or business segments...",
-    disabled=not st.session_state.documents_ready,
+    disabled=not st.session_state.documents_ready or questions_remaining == 0,
 )
 question = typed_question or question
 
+if st.session_state.documents_ready and questions_remaining == 0:
+    st.warning("This demo session has reached its question limit. Reloading in a new browser session may start a new allowance.")
+
 if question:
+    st.session_state.questions_asked += 1
     st.session_state.messages.append({"role": "user", "content": question})
     with st.chat_message("user"):
         st.markdown(question)
